@@ -1,0 +1,10 @@
+{
+    "simple_tuner_path": "/workspace/SimpleTuner",
+    "config_folder_path": "/workspace/SimpleTuner/config",
+    "scenario_folder_path": "/workspace/easy/scenario",
+    "dataset_folder_path": "/workspace/SimpleTuner/datasets",
+    "prompt_folder_path": "/workspace/easy/prompts",
+    "names_folder_path": "/workspace/easy/names",
+    "output_folder_path": "/workspace/SimpleTuner/output",
+    "comfy_models_folder_path": "/workspace/ComfyUI/models"
+}

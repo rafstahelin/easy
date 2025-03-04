@@ -1,0 +1,13 @@
+[
+    "--instance_prompt",
+    "--optimizer",
+    "--lr_scheduler",
+    "--learning_rate",
+    "--train_batch_size",
+    "--lora_rank",
+    "--max_train_steps",
+    "--lr_warmup_steps",
+    "--checkpointing_steps",
+    "--checkpoints_total_limit",
+    "--ema_decay"
+]

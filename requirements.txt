@@ -1,0 +1,4 @@
+rich
+pillow
+safetensors
+numpy
