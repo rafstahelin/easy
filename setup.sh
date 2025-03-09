@@ -73,6 +73,15 @@ if ! grep -q 'alias dl=' ~/.bashrc; then
   echo "Added dl alias to ~/.bashrc"
 fi
 
+# Set up rclone configuration
+mkdir -p ~/.config/rclone
+if [ -f /workspace/rclone.conf ]; then
+  cp /workspace/rclone.conf ~/.config/rclone/
+  echo "Rclone configuration set up successfully"
+else
+  echo "Warning: /workspace/rclone.conf not found. Rclone setup skipped."
+fi
+
 echo "Setup complete! After sourcing your config, you can use your aliases."
 echo "Use 'source ~/.bashrc' to activate the aliases immediately."
 echo "Use 'easy' to run the easy script"
