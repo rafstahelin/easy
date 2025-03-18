@@ -3,6 +3,7 @@ import time
 import os
 import json
 import subprocess
+from pathlib import Path
 from classes.response import Response
 from classes.config import Config
 from classes.multidatabackend import MultiDataBackend
@@ -278,19 +279,34 @@ def help(args=None):
         sys.exit(1)
 
 def lora_mover():
-    subprocess.run([sys.executable, "./classes/lora_mover.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "lora_mover.py")
+    response.print(f"Running lora_mover from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def lora_sync():
-    subprocess.run([sys.executable, "./classes/lora_sync.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "lora_sync.py")
+    response.print(f"Running lora_sync from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def download_configs():
-    subprocess.run([sys.executable, "./classes/download_configs.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "download_configs.py")
+    response.print(f"Running download_configs from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def validation_grid():
-    subprocess.run([sys.executable, "./classes/validation_grid.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "validation_grid.py")
+    response.print(f"Running validation_grid from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def dataset_grid():
-    subprocess.run([sys.executable, "./classes/dataset_grid.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "dataset_grid.py")
+    response.print(f"Running dataset_grid from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def post_process():
     lora_mover()
