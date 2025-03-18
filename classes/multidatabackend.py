@@ -99,7 +99,7 @@ class MultiDataBackend:
             "maximum_image_size": resolution,
             "target_downsample_size": resolution,
             "prepend_instance_prompt": False,
-            "only_instance_prompt": true,
+            "only_instance_prompt": True,
             "caption_strategy": "textfile",
             "skip_file_discovery": "",
             "type": "local",

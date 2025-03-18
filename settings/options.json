@@ -1,6 +1,8 @@
 [
     "--instance_prompt",
+    "--flux_lora_target",
     "--optimizer",
+    "--webhook_config",
     "--lr_scheduler",
     "--learning_rate",
     "--train_batch_size",
@@ -9,5 +11,10 @@
     "--lr_warmup_steps",
     "--checkpointing_steps",
     "--checkpoints_total_limit",
+    "--validation_steps",
+    "--validation_guidance",
+    "--adam_weight_decay",
+    "--max_grad_norm",
+    "--use_ema",
     "--ema_decay"
 ]
