@@ -3,6 +3,7 @@ import time
 import os
 import json
 import subprocess
+from pathlib import Path
 from classes.response import Response
 from classes.config import Config
 from classes.multidatabackend import MultiDataBackend
@@ -247,6 +248,42 @@ def train(args):
         sys.exit(1)
 
 
+def utf(args):
+    try:
+        response.console.clear()
+        response.print("Easy UTF Line Endings Converter\n-------------", "i")
+
+        if not args or not args[0]:
+            response.print("Error: No path provided", "e")
+            response.print("Usage: easy utf <path/to/directory>", "i")
+            return
+
+        path = args[0]
+        if not os.path.isdir(path):
+            response.print(f"Error: {path} is not a valid directory", "e")
+            return
+
+        response.print(f"Converting line endings in: {path}", "i")
+        
+        # First try with the script in the same directory as this module
+        base_dir = Path(__file__).parent
+        converter_path = base_dir / "line_endings_converter.py"
+        
+        if not converter_path.exists():
+            # Try with the script in the "classes" subdirectory
+            converter_path = base_dir / "classes" / "line_endings_converter.py"
+            
+            if not converter_path.exists():
+                response.print("Error: Could not find the line_endings_converter.py script", "e")
+                return
+
+        subprocess.run([sys.executable, str(converter_path), path])
+        
+    except Exception as e:
+        response.print(f"Error in utf:\n{e}", "e")
+        sys.exit(1)
+
+
 def help(args=None): 
     try:
         command_map = {
@@ -261,6 +298,7 @@ def help(args=None):
             "dc": "Download configuration files",
             "vg": "Run validation grid",
             "dg": "Run dataset grid",
+            "utf": "<path> - Convert Windows line endings to Unix in files recursively",
             "pp": "Run post process",
             "tpp": "Run train post process"
         }
@@ -278,19 +316,34 @@ def help(args=None):
         sys.exit(1)
 
 def lora_mover():
-    subprocess.run([sys.executable, "./classes/lora_mover.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "lora_mover.py")
+    response.print(f"Running lora_mover from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def lora_sync():
-    subprocess.run([sys.executable, "./classes/lora_sync.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "lora_sync.py")
+    response.print(f"Running lora_sync from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def download_configs():
-    subprocess.run([sys.executable, "./classes/download_configs.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "download_configs.py")
+    response.print(f"Running download_configs from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def validation_grid():
-    subprocess.run([sys.executable, "./classes/validation_grid.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "validation_grid.py")
+    response.print(f"Running validation_grid from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def dataset_grid():
-    subprocess.run([sys.executable, "./classes/dataset_grid.py"])
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "dataset_grid.py")
+    response.print(f"Running dataset_grid from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
 
 def post_process():
     lora_mover()
@@ -320,6 +373,7 @@ def run():
             "dc": download_configs,
             "vg": validation_grid,
             "dg": dataset_grid,
+            "utf": utf,
             "pp": post_process,
             "tpp": train_post_process
         }

@@ -85,4 +85,4 @@ fi
 echo "Setup complete! After sourcing your config, you can use your aliases."
 echo "Use 'source ~/.bashrc' to activate the aliases immediately."
 echo "Use 'easy' to run the easy script"
-echo "Use 'dl help' to see download manager commands"
+echo "Use 'dl help' to see download manager commands"\
