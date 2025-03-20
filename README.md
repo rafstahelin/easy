@@ -2,6 +2,8 @@
 
 Easy is a command-line tool that simplifies the workflow for training and managing LoRA models with [SimpleTuner](https://github.com/bghira/SimpleTuner). It provides a streamlined interface for configuring, training, and managing machine learning models, with a focus on diffusion models and integration with ComfyUI.
 
+> **Note:** This repository is independent from the [comfy-download](https://github.com/rafstahelin/comfy-download) repository. If you need comfy-download functionality, please install it separately.
+
 ## Features
 
 - **Simplified Configuration**: Easy setup of training configurations with interactive prompts
@@ -87,7 +89,7 @@ easy reinit <partial config folder name> <instance_prompt> <version> <dataset> <
 easy list <config/datasets> [group]
 
 # Start training with a specific configuration
-easy train <name>
+easy train <n>
 
 # Show help information
 easy help
