@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 from rich.panel import Panel
+from rich.columns import Columns
 from time import sleep
 
 class Tool:
@@ -57,14 +58,30 @@ class ValidationGridTool:
         self.image_title_font_size = 48
 
     def display_models(self, models: List[str]) -> None:
-        table = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
-        table.add_column("Model", style="white", no_wrap=True)
+        """Display models in a 2-column grid layout."""
+        # Create two columns of models
+        table1 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table1.add_column("Model", style="white", no_wrap=True)
         
-        for idx, model in enumerate(models, 1):
-            table.add_row(f"[yellow]{idx}.[/yellow] {model}")
+        table2 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table2.add_column("Model", style="white", no_wrap=True)
         
+        # Split models into two columns
+        mid_point = (len(models) + 1) // 2
+        left_models = models[:mid_point]
+        right_models = models[mid_point:]
+        
+        # Add models to first column
+        for idx, model in enumerate(left_models, 1):
+            table1.add_row(f"[yellow]{idx}.[/yellow] {model}")
+        
+        # Add models to second column
+        for idx, model in enumerate(right_models, mid_point + 1):
+            table2.add_row(f"[yellow]{idx}.[/yellow] {model}")
+        
+        # Create panel with both columns
         panel = Panel(
-            table,
+            Columns([table1, table2], equal=True, expand=True),
             title="[gold1]Available Models[/gold1]",
             border_style="blue"
         )
@@ -72,14 +89,30 @@ class ValidationGridTool:
         print()
 
     def display_versions(self, model: str, versions: List[str]) -> None:
-        table = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
-        table.add_column("Version", style="white", no_wrap=True)
+        """Display versions in a 2-column grid layout."""
+        # Create two columns of versions
+        table1 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table1.add_column("Version", style="white", no_wrap=True)
         
-        for idx, version in enumerate(versions, 1):
-            table.add_row(f"[yellow]{idx}.[/yellow] {version}")
+        table2 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table2.add_column("Version", style="white", no_wrap=True)
         
+        # Split versions into two columns
+        mid_point = (len(versions) + 1) // 2
+        left_versions = versions[:mid_point]
+        right_versions = versions[mid_point:]
+        
+        # Add versions to first column
+        for idx, version in enumerate(left_versions, 1):
+            table1.add_row(f"[yellow]{idx}.[/yellow] {version}")
+        
+        # Add versions to second column
+        for idx, version in enumerate(right_versions, mid_point + 1):
+            table2.add_row(f"[yellow]{idx}.[/yellow] {version}")
+        
+        # Create panel with both columns
         panel = Panel(
-            table,
+            Columns([table1, table2], equal=True, expand=True),
             title=f"[gold1]{model} Versions[/gold1]",
             border_style="blue"
         )
@@ -155,7 +188,27 @@ class ValidationGridTool:
 
     def create_grid(self, images: List[Path], model: str, version: str) -> Optional[Image.Image]:
         try:
-            grouped_images = self.group_images(images)
+            # Filter out corrupted images first
+            valid_images = []
+            for img_path in images:
+                try:
+                    # Attempt to open the image to verify it's valid
+                    with Image.open(img_path) as test_img:
+                        test_img.verify()  # Verify it's a valid image
+                    valid_images.append(img_path)
+                except Exception as e:
+                    self.console.print(f"[yellow]Skipping corrupted image: {img_path.name} - {str(e)}[/yellow]")
+            
+            if not valid_images:
+                self.console.print("[red]No valid images found after filtering corrupted files[/red]")
+                return None
+                
+            # Continue with only valid images
+            grouped_images = self.group_images(valid_images)
+            if not grouped_images:
+                self.console.print("[red]No valid grouped images found for grid creation[/red]")
+                return None
+                
             concepts, steps, (base_width, base_height) = self.calculate_grid_dimensions(grouped_images)
             
             n_cols = len(concepts)
@@ -174,7 +227,7 @@ class ValidationGridTool:
             
             try:
                 main_title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 
-                                                   self.main_title_font_size)
+                                                self.main_title_font_size)
                 image_title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 
                                                     self.image_title_font_size)
             except Exception:
@@ -201,8 +254,26 @@ class ValidationGridTool:
                         title_x = x + (base_width - title_width) // 2
                         draw.text((title_x, y), title, font=image_title_font, fill='white')
                         
-                        with Image.open(img_path) as img:
-                            grid_image.paste(img, (x, y + self.image_title_height))
+                        try:
+                            with Image.open(img_path) as img:
+                                # Make a copy to avoid issues with truncated files
+                                img_copy = img.copy()
+                                grid_image.paste(img_copy, (x, y + self.image_title_height))
+                        except Exception as e:
+                            self.console.print(f"[red]Error pasting image {img_path.name}: {str(e)}[/red]")
+                            # Draw error placeholder
+                            error_box = ImageDraw.Draw(grid_image)
+                            error_box.rectangle(
+                                [(x, y + self.image_title_height), 
+                                (x + base_width, y + self.image_title_height + base_height)], 
+                                outline="red", fill="black")
+                            error_box.text(
+                                (x + base_width // 2, y + self.image_title_height + base_height // 2),
+                                "Image Error",
+                                fill="red",
+                                font=image_title_font,
+                                anchor="mm"
+                            )
             
             return grid_image
             

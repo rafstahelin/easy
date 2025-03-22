@@ -1,5 +1,6 @@
 import os
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from rich.console import Console
@@ -50,8 +51,6 @@ class Tool:
         
         if not result:
             return None
-        
-        rprint(result)
 
         matches = []
         for folder in result.splitlines():
@@ -79,13 +78,16 @@ class Tool:
         return None
 
     def download_config(self, source_path: Path, base_name: str) -> bool:
+        """Upload a config from RunPod (local) to Dropbox."""
         dropbox_folder = self.find_matching_dropbox_folder(base_name)
         if not dropbox_folder:
             return False
 
+        # Create destination path in Dropbox
         dest_path = f"{self.dropbox_base}/{dropbox_folder}/4training/config/{source_path.name}"
         dest_path = dest_path.replace('//', '/')
 
+        # Ensure the directory exists in Dropbox
         mkdir_result = self._run_rclone_command([
             "mkdir",
             f"{self.dropbox_base}/{dropbox_folder}/4training/config"
@@ -94,94 +96,139 @@ class Tool:
         if mkdir_result is None:
             return False
 
+        # Copy from local (RunPod) to Dropbox
         rprint(f"[cyan]Copying {source_path.name} to {dest_path}[/cyan]")
         copy_result = self._run_rclone_command([
             "copy",
             "--checksum",
-            str(source_path),
-            dest_path,
+            str(source_path),   # Source is local RunPod path
+            dest_path,          # Destination is Dropbox path
             "-v",
             "--progress",
             "--exclude", ".ipynb_checkpoints/**"
         ], check_output=False)
         
         if copy_result is not None:
-            rprint(f"[green]Successfully downloaded {source_path.name}[/green]")
+            rprint(f"[green]Successfully uploaded {source_path.name} to Dropbox[/green]")
             return True
         return False
 
     def download_config_group(self, base_name: str) -> bool:
+        """Upload all configs for a family from RunPod (local) to Dropbox."""
         dropbox_folder = self.find_matching_dropbox_folder(base_name)
         if not dropbox_folder:
             return False
 
-        configs = list(self.base_path.glob(f"{base_name}-*"))
+        # Get all configs with the specified family name
+        configs = list(self.base_path.glob(f"{base_name}_*"))
         if not configs:
             rprint(f"[yellow]No configs found matching {base_name}[/yellow]")
             return False
 
+        # Upload each config to Dropbox
         success = True
         for config in configs:
             if not self.download_config(config, base_name):
                 success = False
-                rprint(f"[red]Failed to download {config.name}[/red]")
+                rprint(f"[red]Failed to upload {config.name} to Dropbox[/red]")
 
         return success
 
-    def get_config_dirs(self) -> List[Path]:
-        try:
-            return [
-                d for d in self.base_path.iterdir()
-                if d.is_dir() and d.name not in self.excluded_dirs
-            ]
-        except Exception as e:
-            rprint(f"[red]Error scanning config directory: {str(e)}[/red]")
-            return []
-
-    def display_configs(self, configs: List[Path]) -> List:
-        grouped = {}
-        for config in sorted(configs, key=lambda x: x.name):
-            base_name = config.name.split('-')[0]
-            grouped.setdefault(base_name, []).append(config)
-
-        panels = []
-        ordered_configs = []
-        counter = 1
+    def extract_family_name(self, config_path: Path) -> str:
+        """Extract the family name (prefix) from a config path."""
+        # Extract the base family name (e.g., "sofia" from "sofia_001_...")
+        return config_path.name.split('_')[0]
+    
+    def get_unique_families(self) -> Dict[str, List[Path]]:
+        """Get only unique family names (prefixes) and group configs by family."""
+        configs = [
+            d for d in self.base_path.iterdir()
+            if d.is_dir() and d.name not in self.excluded_dirs
+        ]
         
-        for base_name, group_configs in sorted(grouped.items()):
-            table = Table(show_header=False, show_edge=False, box=None, padding=(0,1))
-            table.add_column(justify="left", no_wrap=False, overflow='fold', max_width=30)
+        families = {}
+        for config in configs:
+            family_name = self.extract_family_name(config)
+            if family_name not in families:
+                families[family_name] = []
+            families[family_name].append(config)
+        return families
+
+    def display_unique_families(self, families: Dict[str, List[Path]]) -> List[str]:
+        """Display only unique family names in a two-column layout."""
+        family_names = sorted(families.keys())
+        
+        # Create tables for two columns
+        table1 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table1.add_column("Family", style="white", no_wrap=True)
+        
+        table2 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table2.add_column("Family", style="white", no_wrap=True)
+        
+        # Split families into two columns
+        mid_point = (len(family_names) + 1) // 2
+        left_families = family_names[:mid_point]
+        right_families = family_names[mid_point:]
+        
+        # Add families to first column
+        for idx, family in enumerate(left_families, 1):
+            table1.add_row(f"[yellow]{idx}.[/yellow] {family}")
+        
+        # Add families to second column
+        for idx, family in enumerate(right_families, mid_point + 1):
+            table2.add_row(f"[yellow]{idx}.[/yellow] {family}")
+        
+        # Create panel with both columns
+        panel = Panel(
+            Columns([table1, table2], equal=True, expand=True),
+            title="[gold1]Available Configurations[/gold1]",
+            border_style="blue"
+        )
+        self.console.print(panel)
+        
+        return family_names
+
+    def display_family_configs(self, family_name: str, configs: List[Path]) -> List[Path]:
+        """Display all configs for a specific family in a two-column layout."""
+        configs = sorted(configs, key=lambda x: x.name)
+        
+        # Create tables for two columns
+        table1 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table1.add_column("Config", style="white", no_wrap=True)
+        
+        table2 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table2.add_column("Config", style="white", no_wrap=True)
+        
+        # First option is always "all"
+        table1.add_row(f"[yellow]1.[/yellow] all")
+        
+        # Split configs into two columns (after accounting for "all")
+        if len(configs) <= 7:
+            # For small number of configs, keep them all in first column
+            for idx, config in enumerate(configs, 2):
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+        else:
+            # For larger numbers, balance the columns
+            mid_point = len(configs) // 2
             
-            table.add_row(f"[yellow]{counter}. {base_name} all[/yellow]")
-            ordered_configs.append(("group", base_name, group_configs))
-            counter += 1
+            # Add first half to left column (after "all")
+            for idx, config in enumerate(configs[:mid_point], 2):
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
             
-            for config in sorted(group_configs, key=lambda x: x.name):
-                table.add_row(f"[yellow]{counter}. {config.name}[/yellow]")
-                ordered_configs.append(("single", config.name, config))
-                counter += 1
-                
-            panels.append(Panel(table, title=f"[magenta]{base_name}[/magenta]", 
-                              border_style="blue", width=36))
-
-        panels_per_row = 3
-        for i in range(0, len(panels), panels_per_row):
-            row_panels = panels[i:i + panels_per_row]
-            self.console.print(Columns(row_panels, equal=True, expand=True))
-
-        return ordered_configs
-
-    def process_selection(self, selection: str, ordered_configs: List) -> tuple[Optional[str], Optional[Path]]:
-        try:
-            idx = int(selection) - 1
-            if 0 <= idx < len(ordered_configs):
-                entry_type, name, data = ordered_configs[idx]
-                return (entry_type, data if entry_type == "single" else name)
-            rprint("[red]Invalid selection[/red]")
-            return None, None
-        except ValueError:
-            rprint("[red]Invalid input[/red]")
-            return None, None
+            # Add second half to right column
+            start_idx = mid_point + 2  # +2 to account for "all" and 0-indexing
+            for idx, config in enumerate(configs[mid_point:], start_idx):
+                table2.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+        
+        # Create panel with both columns
+        panel = Panel(
+            Columns([table1, table2], equal=True, expand=True),
+            title=f"[gold1]{family_name} Configs[/gold1]",
+            border_style="blue"
+        )
+        self.console.print(panel)
+        
+        return configs
 
     def clear_screen(self):
         os.system('clear' if os.name == 'posix' else 'cls')
@@ -192,35 +239,74 @@ class Tool:
         if not self.verify_paths():
             return
 
-        configs = self.get_config_dirs()
-        if not configs:
-            rprint("[yellow]No config directories found to process[/yellow]")
-            return
-
         while True:
-            rprint("\n[cyan]Available configurations:[/cyan]")
-            ordered_configs = self.display_configs(configs)
-
             try:
-                selection = input("\nEnter config number to download (or press Enter to exit): ").strip()
-                if not selection:
+                self.console.print("[cyan]Loading tool: download_configs[/cyan]")
+                print()
+                
+                # STEP 1: Show ONLY unique family names (prefixes)
+                family_groups = self.get_unique_families()
+                if not family_groups:
+                    rprint("[yellow]No config directories found to process[/yellow]")
+                    return
+                    
+                family_names = self.display_unique_families(family_groups)
+                
+                family_selection = input("\nEnter config family number (or press Enter to exit): ").strip()
+                if not family_selection:
                     break
-
-                entry_type, data = self.process_selection(selection, ordered_configs)
-                if entry_type == "group":
-                    self.download_config_group(data)
-                elif entry_type == "single":
-                    base_name = data.name.split('-')[0]
-                    self.download_config(data, base_name)
-
-                input("\nPress Enter to continue...")
-                self.clear_screen()
-
+                
+                try:
+                    family_idx = int(family_selection) - 1
+                    if not (0 <= family_idx < len(family_names)):
+                        rprint("[red]Invalid selection[/red]")
+                        input("\nPress Enter to continue...")
+                        self.clear_screen()
+                        continue
+                    
+                    selected_family = family_names[family_idx]
+                    
+                    # STEP 2: Show configs for selected family
+                    self.clear_screen()
+                    self.console.print("[cyan]Loading tool: download_configs[/cyan]")
+                    print()
+                    
+                    family_configs = self.display_family_configs(
+                        selected_family, 
+                        family_groups[selected_family]
+                    )
+                    
+                    config_selection = input(f"\nEnter config number to download from {selected_family} (or press Enter to go back): ").strip()
+                    if not config_selection:
+                        self.clear_screen()
+                        continue
+                    
+                    try:
+                        config_idx = int(config_selection)
+                        if config_idx == 1:  # "all" option
+                            self.download_config_group(selected_family)
+                        elif 2 <= config_idx <= len(family_configs) + 1:  # +1 for "all" option
+                            selected_config = family_configs[config_idx - 2]  # -2 to adjust for "all" and 0-indexing
+                            self.download_config(selected_config, selected_family)
+                        else:
+                            rprint("[red]Invalid selection[/red]")
+                    except ValueError:
+                        rprint("[red]Invalid input. Please enter a number.[/red]")
+                    
+                    input("\nPress Enter to continue...")
+                    self.clear_screen()
+                    
+                except ValueError:
+                    rprint("[red]Invalid input. Please enter a number.[/red]")
+                    input("\nPress Enter to continue...")
+                    self.clear_screen()
+                
             except KeyboardInterrupt:
                 rprint("\n[yellow]Operation cancelled by user[/yellow]")
                 break
             except Exception as e:
                 rprint(f"[red]Error: {str(e)}[/red]")
+                traceback.print_exc()
                 input("\nPress Enter to continue...")
                 self.clear_screen()
 
