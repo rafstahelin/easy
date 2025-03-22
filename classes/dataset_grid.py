@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 from rich.console import Console
 from rich.panel import Panel
 from rich.columns import Columns
@@ -59,19 +59,39 @@ class DatasetGridTool:
             
         return ordered_folders
 
-    def get_dataset_path(self, config_dir: Path) -> Optional[Path]:
-        """Extract dataset path from multidatabackend.json."""
+    def get_dataset_paths(self, config_dir: Path) -> List[Path]:
+        """Extract all dataset paths from multidatabackend.json."""
         backend_file = config_dir / "multidatabackend.json"
+        paths = []
+        
         try:
             with open(backend_file) as f:
                 data = json.load(f)
                 for item in data:
-                    if isinstance(item, dict) and 'instance_data_dir' in item:
-                        dataset_path = item['instance_data_dir'].split('/')[-1]
-                        return self.datasets_path / dataset_path
+                    if isinstance(item, dict) and 'instance_data_dir' in item and not item.get('disabled', False):
+                        # Handle full path properly
+                        full_path = item['instance_data_dir']
+                        if full_path.startswith('datasets/'):
+                            # Remove 'datasets/' prefix
+                            rel_path = full_path[len('datasets/'):]
+                        else:
+                            rel_path = full_path
+
+                        dataset_path = self.datasets_path / rel_path
+                        if dataset_path.exists():
+                            paths.append(dataset_path)
+                        else:
+                            self.console.print(f"[yellow]Warning: Path not found: {dataset_path}[/yellow]")
+            
+            if paths:
+                self.console.print(f"[green]Found {len(paths)} dataset paths[/green]")
+            else:
+                self.console.print("[red]No valid dataset paths found in config[/red]")
+                
         except Exception as e:
-            self.console.print(f"[red]Error reading dataset path: {str(e)}[/red]")
-        return None
+            self.console.print(f"[red]Error reading dataset paths: {str(e)}[/red]")
+            
+        return paths
 
     def create_grid(self, images: List[Path], output_path: Path, title: str):
         """Create and save image grid."""
@@ -128,30 +148,68 @@ class DatasetGridTool:
                 break
             quality -= 5
 
+    def find_images_recursively(self, directory: Path) -> List[Path]:
+        """Find all images in a directory and its subdirectories."""
+        images = []
+        image_extensions = {'.jpg', '.jpeg', '.png'}
+        
+        # Add progress indication
+        self.console.print(f"[cyan]Scanning directory: {directory}[/cyan]")
+        
+        # Walk through directory recursively
+        for item in directory.rglob('*'):
+            if item.is_file() and item.suffix.lower() in image_extensions:
+                images.append(item)
+                
+        if images:
+            self.console.print(f"[green]Found {len(images)} images in {directory} and subdirectories[/green]")
+        else:
+            self.console.print(f"[yellow]No images found in {directory} and subdirectories[/yellow]")
+            
+        return images
+
     def process_single_config(self, config_dir):
-        dataset_dir = self.get_dataset_path(config_dir)
-        if not dataset_dir:
-            self.console.print("[red]Could not find dataset path in config[/red]")
+        dataset_paths = self.get_dataset_paths(config_dir)
+        if not dataset_paths:
+            self.console.print("[red]Could not find any valid dataset paths in config[/red]")
             return
 
-        if not dataset_dir.exists():
-            self.console.print(f"[red]Dataset directory not found: {dataset_dir}[/red]")
+        # Collect images from all dataset paths
+        all_images = []
+        for dataset_dir in dataset_paths:
+            # First check if there are images directly in the directory
+            direct_images = list(dataset_dir.glob("*.jpg")) + \
+                           list(dataset_dir.glob("*.jpeg")) + \
+                           list(dataset_dir.glob("*.png"))
+            
+            # Check for subdirectories with images
+            has_subdirs = any(item.is_dir() for item in dataset_dir.iterdir())
+            
+            # If we have subdirectories and not many direct images, use recursive scanning
+            if has_subdirs and len(direct_images) < 10:
+                self.console.print(f"[cyan]Dataset {dataset_dir.name} has subdirectories. Using recursive scanning...[/cyan]")
+                path_images = self.find_images_recursively(dataset_dir)
+            else:
+                path_images = direct_images
+                self.console.print(f"[cyan]Found {len(path_images)} images directly in dataset folder {dataset_dir.name}[/cyan]")
+                
+            all_images.extend(path_images)
+
+        if not all_images:
+            self.console.print("[red]No images found in any dataset directories[/red]")
             return
 
-        images = list(dataset_dir.glob("*.jpg")) + \
-                list(dataset_dir.glob("*.jpeg")) + \
-                list(dataset_dir.glob("*.png"))
-
-        if not images:
-            self.console.print("[red]No images found in dataset directory[/red]")
-            return
+        # Limit to first 100 images to prevent huge grids
+        if len(all_images) > 100:
+            self.console.print(f"[yellow]Limiting grid to first 100 of {len(all_images)} images[/yellow]")
+            all_images = all_images[:100]
 
         output_file = config_dir / f"{config_dir.name}-dataset-grid.jpg"
-        title = f"dataset_grid - {config_dir.name} - {dataset_dir.name}"
+        title = f"{config_dir.name} - dataset_grid"
         
         self.console.print("[cyan]Creating dataset grid...[/cyan]")
-        self.create_grid(images, output_file, title)
-        self.console.print(f"[cyan]Grid saved to: {output_file}[/cyan]")
+        self.create_grid(all_images, output_file, title)
+        self.console.print(f"[green]Grid saved to: {output_file}[/green]")
 
     def run(self):
         config_folders = self.list_config_folders()
@@ -163,7 +221,6 @@ class DatasetGridTool:
         folder_num = Prompt.ask("Enter number to select config").strip()
         if not folder_num:
             return
-
 
         try:
             selected = config_folders[int(folder_num) - 1]
