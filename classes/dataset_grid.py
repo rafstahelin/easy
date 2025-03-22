@@ -1,13 +1,15 @@
 import os
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict
 from rich.console import Console
 from rich.panel import Panel
 from rich.columns import Columns
+from rich.table import Table
 from rich.prompt import Prompt
 from PIL import Image
 import json
 import math
+import traceback
 
 class DatasetGridTool:
     def __init__(self):
@@ -15,54 +17,108 @@ class DatasetGridTool:
         self.config_path = Path('/workspace/SimpleTuner/config')
         self.datasets_path = Path('/workspace/SimpleTuner/datasets')
 
-    def list_config_folders(self) -> List[str]:
-        """List configuration folders grouped by base name."""
+    def extract_family_name(self, config_path: Path) -> str:
+        """Extract the family name (prefix) from a config path."""
+        # Extract just the base family name (e.g., "sofia" from "sofia_001_...")
+        return config_path.name.split('_')[0]
+
+    def get_unique_families(self) -> Dict[str, List[Path]]:
+        """Get only unique family names (prefixes) and group configs by family."""
         folders = [f for f in self.config_path.iterdir() 
                   if f.is_dir() and f.name != 'templates' 
                   and not f.name.startswith('.ipynb_checkpoints')]
         
-        grouped = {}
-        ordered_folders = []
-        panels = []
-        index = 1
-        
+        # Group by family name
+        families = {}
         for folder in folders:
-            base_name = folder.name.split('-', 1)[0]
-            grouped.setdefault(base_name, []).append(folder.name)
+            family_name = self.extract_family_name(folder)
+            if family_name not in families:
+                families[family_name] = []
+            families[family_name].append(folder)
             
-        for base_name in sorted(grouped.keys()):
-            content = []
-            names_in_group = sorted(grouped[base_name], key=str.lower, reverse=True)
-            
-            # Add "process all" option for each group
-            content.append(f"[yellow]{index}.[/yellow] all")
-            ordered_folders.append(f"{base_name}:all")
-            index += 1
-            
-            # Add individual folders
-            for name in names_in_group:
-                content.append(f"[yellow]{index}.[/yellow] {name}")
-                ordered_folders.append(name)
-                index += 1
-                
-            panel = Panel(
-                "\n".join(content),
-                title=f"[yellow]{base_name}[/yellow]",
-                border_style="blue",
-                width=40
-            )
-            panels.append(panel)
+        return families
+
+    def display_unique_families(self, families: Dict[str, List[Path]]) -> List[str]:
+        """Display only unique family names in a two-column layout."""
+        family_names = sorted(families.keys())
         
-        for i in range(0, len(panels), 3):
-            row_panels = panels[i:i + 3]
-            self.console.print(Columns(row_panels, equal=True, expand=True))
+        # Create tables for two columns
+        table1 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table1.add_column("Family", style="white", no_wrap=True)
+        
+        table2 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table2.add_column("Family", style="white", no_wrap=True)
+        
+        # Split families into two columns
+        mid_point = (len(family_names) + 1) // 2
+        left_families = family_names[:mid_point]
+        right_families = family_names[mid_point:]
+        
+        # Add families to first column
+        for idx, family in enumerate(left_families, 1):
+            table1.add_row(f"[yellow]{idx}.[/yellow] {family}")
+        
+        # Add families to second column
+        for idx, family in enumerate(right_families, mid_point + 1):
+            table2.add_row(f"[yellow]{idx}.[/yellow] {family}")
+        
+        # Create panel with both columns
+        panel = Panel(
+            Columns([table1, table2], equal=True, expand=True),
+            title="[gold1]Available Configurations[/gold1]",
+            border_style="blue"
+        )
+        self.console.print(panel)
+        
+        return family_names
+
+    def display_family_configs(self, family_name: str, configs: List[Path]) -> List[Path]:
+        """Display configs for a specific family in a 2-column layout."""
+        # Sort configs
+        family_configs = sorted(configs, key=lambda x: x.name)
+        
+        # Create tables for two columns
+        table1 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table1.add_column("Config", style="white", no_wrap=True)
+        
+        table2 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table2.add_column("Config", style="white", no_wrap=True)
+        
+        # First option is always "all"
+        table1.add_row(f"[yellow]1.[/yellow] all")
+        
+        # Split configs into two columns (after accounting for "all")
+        if len(family_configs) <= 7:
+            # For small number of configs, keep them all in first column
+            for idx, config in enumerate(family_configs, 2):
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+        else:
+            # Calculate midpoint for balanced columns, accounting for "all" option
+            mid_point = len(family_configs) // 2
             
-        return ordered_folders
+            # Add first half to left column (after "all")
+            for idx, config in enumerate(family_configs[:mid_point], 2):
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+            
+            # Add second half to right column
+            start_idx = mid_point + 2  # +2 to account for "all" and 0-indexing
+            for idx, config in enumerate(family_configs[mid_point:], start_idx):
+                table2.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+        
+        # Create panel with both columns
+        panel = Panel(
+            Columns([table1, table2], equal=True, expand=True),
+            title=f"[gold1]{family_name} Configs[/gold1]",
+            border_style="blue"
+        )
+        self.console.print(panel)
+        
+        return family_configs
 
     def get_dataset_paths(self, config_dir: Path) -> List[Path]:
-        """Extract all dataset paths from multidatabackend.json."""
+        """Extract all unique dataset paths from multidatabackend.json."""
         backend_file = config_dir / "multidatabackend.json"
-        paths = []
+        unique_paths = set()  # Use a set to store unique paths
         
         try:
             with open(backend_file) as f:
@@ -79,12 +135,16 @@ class DatasetGridTool:
 
                         dataset_path = self.datasets_path / rel_path
                         if dataset_path.exists():
-                            paths.append(dataset_path)
+                            # Add to set to ensure uniqueness
+                            unique_paths.add(dataset_path)
                         else:
                             self.console.print(f"[yellow]Warning: Path not found: {dataset_path}[/yellow]")
             
+            # Convert set back to list for return
+            paths = list(unique_paths)
+            
             if paths:
-                self.console.print(f"[green]Found {len(paths)} dataset paths[/green]")
+                self.console.print(f"[green]Found {len(paths)} unique dataset paths[/green]")
             else:
                 self.console.print("[red]No valid dataset paths found in config[/red]")
                 
@@ -211,37 +271,81 @@ class DatasetGridTool:
         self.create_grid(all_images, output_file, title)
         self.console.print(f"[green]Grid saved to: {output_file}[/green]")
 
+    def process_family_configs(self, family_name: str, configs: List[Path]):
+        """Process all configs in a family."""
+        for config in configs:
+            self.console.print(f"[cyan]Processing {config.name}...[/cyan]")
+            self.process_single_config(config)
+
+    def clear_screen(self):
+        os.system('clear' if os.name == 'posix' else 'cls')
+
     def run(self):
-        config_folders = self.list_config_folders()
-        if not config_folders:
-            self.console.print("[red]No configuration folders found[/red]")
-            return
-
-        from rich.prompt import Prompt  # Change back to regular Prompt
-        folder_num = Prompt.ask("Enter number to select config").strip()
-        if not folder_num:
-            return
-
+        self.clear_screen()
+        self.console.print("[cyan]Loading tool: dataset_grid[/cyan]")
+        print()
+        
         try:
-            selected = config_folders[int(folder_num) - 1]
+            # Step 1: Get and display unique family names
+            family_groups = self.get_unique_families()
             
-            # Handle "all" selection for a group
-            if ":all" in selected:
-                base_name = selected.split(":")[0]
-                group_configs = [f for f in config_folders 
-                               if f.startswith(base_name) and ":all" not in f]
+            if not family_groups:
+                self.console.print("[red]No configuration folders found[/red]")
+                return
+            
+            family_names = self.display_unique_families(family_groups)
+            
+            # Get selection for family
+            family_selection = input("\nEnter config family number (or press Enter to exit): ").strip()
+            
+            if not family_selection:
+                return
                 
-                for config in group_configs:
-                    self.console.print(f"[cyan]Processing {config}...[/cyan]")
-                    config_dir = self.config_path / config
-                    self.process_single_config(config_dir)
-            else:
-                config_dir = self.config_path / selected
-                self.process_single_config(config_dir)
+            try:
+                family_idx = int(family_selection) - 1
+                if not (0 <= family_idx < len(family_names)):
+                    self.console.print("[red]Invalid selection[/red]")
+                    input("\nPress Enter to continue...")
+                    return
+                    
+                selected_family = family_names[family_idx]
                 
-        except (ValueError, IndexError):
-            self.console.print("[red]Invalid selection[/red]")
-            return
+                # Step 2: Display configs for selected family
+                self.clear_screen()
+                self.console.print("[cyan]Loading tool: dataset_grid[/cyan]")
+                print()
+                
+                family_configs = self.display_family_configs(selected_family, family_groups[selected_family])
+                
+                # Get selection for config
+                config_selection = input(f"\nEnter config number to process from {selected_family} (or press Enter to go back): ").strip()
+                if not config_selection:
+                    return
+                    
+                try:
+                    config_idx = int(config_selection)
+                    
+                    if config_idx == 1:  # "all" option
+                        self.process_family_configs(selected_family, family_configs)
+                    elif 2 <= config_idx <= len(family_configs) + 1:  # +1 for "all" option
+                        selected_config = family_configs[config_idx - 2]  # -2 to adjust for "all" and 0-indexing
+                        self.process_single_config(selected_config)
+                    else:
+                        self.console.print("[red]Invalid selection[/red]")
+                        input("\nPress Enter to continue...")
+                        
+                except ValueError:
+                    self.console.print("[red]Invalid input. Please enter a number.[/red]")
+                    input("\nPress Enter to continue...")
+                
+            except ValueError:
+                self.console.print("[red]Invalid input. Please enter a number.[/red]")
+                input("\nPress Enter to continue...")
+                
+        except Exception as e:
+            self.console.print(f"[red]An error occurred: {str(e)}[/red]")
+            traceback.print_exc()
+            input("Press Enter to continue...")
 
 class Tool:
     def __init__(self):
