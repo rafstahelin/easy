@@ -186,19 +186,19 @@ class OutputDownloader:
         if len(configs) <= 7:
             # For small number of configs, keep them all in first column
             for idx, config in enumerate(configs, 2):
-                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")  # Use full config.name 
         else:
             # For larger numbers, balance the columns
             mid_point = len(configs) // 2
             
             # Add first half to left column (after "all")
             for idx, config in enumerate(configs[:mid_point], 2):
-                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")  # Use full config.name
             
             # Add second half to right column
             start_idx = mid_point + 2  # +2 to account for "all" and 0-indexing
             for idx, config in enumerate(configs[mid_point:], start_idx):
-                table2.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+                table2.add_row(f"[yellow]{idx}.[/yellow] {config.name}")  # Use full config.name
         
         # Create panel with both columns
         panel = Panel(
