@@ -4,6 +4,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from rich.console import Console
@@ -19,6 +20,10 @@ class OutputDownloader:
         self.excluded_dirs = [".git", "__pycache__", ".vscode"]
         self.excluded_folders = ["validation_images"]
         self.excluded_files = ["pytorch_lora_weights.safetensors"]
+        self.dropbox_base_path = "dbx:/studio/ai/data/1models"
+        self.model_pattern = re.compile(r'013-([^/]+)')
+        # Cache for model directory mappings
+        self.model_dir_cache = {}
         
     def clear_screen(self):
         """Clear the terminal screen."""
@@ -27,10 +32,82 @@ class OutputDownloader:
         else:
             os.system("clear")
     
+    def verify_dropbox_connection(self) -> bool:
+        """Verify that Dropbox is accessible."""
+        try:
+            # Quick dbx connection check
+            result = subprocess.run(
+                ["rclone", "lsf", "dbx:/", "--max-depth", "1"],
+                check=True,
+                capture_output=True,
+                timeout=10
+            )
+            return True
+        except subprocess.TimeoutExpired:
+            self.console.print("[yellow]Warning: Dropbox connection check timed out. Will skip Dropbox uploads.[/yellow]")
+            return False
+        except subprocess.CalledProcessError:
+            self.console.print("[yellow]Warning: Cannot connect to Dropbox. Will skip Dropbox uploads.[/yellow]")
+            return False
+        except Exception as e:
+            self.console.print(f"[yellow]Warning when checking Dropbox connection: {str(e)}. Will skip Dropbox uploads.[/yellow]")
+            return False
+    
     def extract_family_name(self, config_path: Path) -> str:
         """Extract the family name (prefix) from a config path."""
         # Extract just the base family name (e.g., "sofia" from "sofia_001_...")
-        return config_path.name.split('_')[0]
+        return config_path.name.split('_')[0] if '_' in config_path.name else config_path.name
+    
+    def find_model_directory(self, family_prefix: str) -> Optional[str]:
+        """
+        Find the full model directory in Dropbox that corresponds to the family prefix.
+        Returns the full path component (e.g., "013-ChuWong" for prefix "chu").
+        """
+        # Check cache first
+        if family_prefix in self.model_dir_cache:
+            return self.model_dir_cache[family_prefix]
+        
+        try:
+            # List all directories in the models path
+            result = subprocess.run(
+                ["rclone", "lsf", self.dropbox_base_path, "--dirs-only"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            # Find directories matching the 013-* pattern
+            model_dirs = result.stdout.strip().split('\n')
+            matching_dirs = []
+            
+            for dir_name in model_dirs:
+                # Skip empty lines
+                if not dir_name:
+                    continue
+                
+                # Check if this directory corresponds to our family prefix
+                # This could involve checking if the prefix is in the directory name
+                # or if there's another way to map between them
+                if family_prefix.lower() in dir_name.lower():
+                    matching_dirs.append(dir_name)
+            
+            if matching_dirs:
+                # Use the first matching directory
+                self.model_dir_cache[family_prefix] = matching_dirs[0]
+                return matching_dirs[0]
+            
+            # If no exact match found, use a default pattern
+            default_dir = f"013-{family_prefix}"
+            self.console.print(f"[yellow]Warning: No matching model directory found for prefix '{family_prefix}'. Using '{default_dir}'.[/yellow]")
+            self.model_dir_cache[family_prefix] = default_dir
+            return default_dir
+            
+        except Exception as e:
+            self.console.print(f"[yellow]Warning: Could not find model directory for '{family_prefix}': {str(e)}. Using default.[/yellow]")
+            # Fall back to a default pattern
+            default_dir = f"013-{family_prefix}"
+            self.model_dir_cache[family_prefix] = default_dir
+            return default_dir
     
     def get_unique_families(self) -> Dict[str, List[Path]]:
         """Get only unique family names (prefixes) and group configs by family."""
@@ -99,19 +176,19 @@ class OutputDownloader:
         if len(configs) <= 7:
             # For small number of configs, keep them all in first column
             for idx, config in enumerate(configs, 2):
-                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")  # Use full config.name 
         else:
             # For larger numbers, balance the columns
             mid_point = len(configs) // 2
             
             # Add first half to left column (after "all")
             for idx, config in enumerate(configs[:mid_point], 2):
-                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")  # Use full config.name
             
             # Add second half to right column
             start_idx = mid_point + 2  # +2 to account for "all" and 0-indexing
             for idx, config in enumerate(configs[mid_point:], start_idx):
-                table2.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+                table2.add_row(f"[yellow]{idx}.[/yellow] {config.name}")  # Use full config.name
         
         # Create panel with both columns
         panel = Panel(
@@ -188,45 +265,61 @@ class OutputDownloader:
     def download_output_to_dropbox(self, config_path: Path) -> bool:
         """Download config output data to Dropbox with filtering applied."""
         try:
-            family_name = self.extract_family_name(config_path)
+            # Check if Dropbox is accessible
+            if not self.verify_dropbox_connection():
+                self.console.print("[red]Cannot connect to Dropbox. Aborting download.[/red]")
+                return False
+                
+            family_prefix = self.extract_family_name(config_path)
+            
+            # Find the model directory in Dropbox
+            model_dir = self.find_model_directory(family_prefix)
             
             # Create filtered temp directory
             self.console.print(f"[cyan]Creating filtered copy of {config_path.name}...[/cyan]")
             temp_dir, checkpoint_number = self.create_filtered_temp_directory(config_path)
             
             # Determine Dropbox destination path
-            dbx_base_path = f"/studio/ai/data/1models/013-{family_name.capitalize()}/4training/output/{config_path.name}"
+            # Path should be dbx:/studio/ai/data/1models/013-ChuWong/4training/output/chu_001_constant_1e_4_1_32/
+            dbx_destination_dir = f"{self.dropbox_base_path}/{model_dir}/4training/output/{config_path.name}"
             
             # Sync to Dropbox
-            self.console.print(f"[cyan]Uploading filtered output to Dropbox: {dbx_base_path}[/cyan]")
+            self.console.print(f"[cyan]Uploading filtered output to Dropbox: {dbx_destination_dir}[/cyan]")
+            self.console.print(f"[cyan]Highest checkpoint: {checkpoint_number}[/cyan]")
             
             # Using subprocess to run rclone
-            with Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(),
-                console=self.console
-            ) as progress:
-                task = progress.add_task(f"Uploading {config_path.name} (highest checkpoint: {checkpoint_number})", total=1)
-                
-                result = subprocess.run(
-                    ["rclone", "copy", str(temp_dir), f"dbx:{dbx_base_path}",
-                     "--progress", "--update", "--verbose", "--stats", "1s", "--stats-one-line"],
-                    capture_output=True,
-                    text=True
-                )
-                
-                progress.update(task, completed=1)
+            cmd = [
+                "rclone",
+                "copy",
+                "--progress",
+                str(temp_dir),
+                dbx_destination_dir
+            ]
+            
+            # Execute rclone and capture real-time output
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True
+            )
+            
+            # Show output in real-time
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    print(output.strip())
             
             # Clean up temp directory
             shutil.rmtree(temp_dir)
             
-            if result.returncode == 0:
-                self.console.print(f"[green]Successfully uploaded output to Dropbox: {dbx_base_path}[/green]")
+            if process.returncode == 0:
+                self.console.print(f"[green]Successfully uploaded output to Dropbox: {dbx_destination_dir}[/green]")
                 return True
             else:
-                self.console.print(f"[red]Failed to upload to Dropbox. Error: {result.stderr}[/red]")
+                self.console.print(f"[red]Failed to upload to Dropbox[/red]")
                 return False
             
         except Exception as e:
@@ -313,5 +406,16 @@ class OutputDownloader:
         input("\nPress Enter to continue...")
 
 if __name__ == "__main__":
-    downloader = OutputDownloader()
-    downloader.run()
+    try:
+        downloader = OutputDownloader()
+        downloader.run()
+    except KeyboardInterrupt:
+        print("\nOperation canceled by user.")
+        sys.exit(0)
+    except Exception as e:
+        console = Console(stderr=True)
+        console.print(f"[red]Fatal error:[/red]")
+        console.print(f"[red]{str(e)}[/red]")
+        import traceback
+        console.print(traceback.format_exc())
+        input("Press Enter to exit...")
