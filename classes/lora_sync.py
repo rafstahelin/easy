@@ -1,19 +1,21 @@
 import os
 import sys
 import platform
-import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.columns import Columns
+from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn
 
 class LoraSync:
     def __init__(self, base_path: Optional[Path] = None):
         self.console = Console()
-        self.base_path = base_path or Path("/workspace/SimpleTuner/output")
+        self.base_path = base_path or Path("/workspace/ComfyUI/models/loras/flux-train")
+        self.dropbox_path = "dbx:/studio/ai/libs/diffusion-models/models/loras/flux-train"
         self.excluded_dirs = [".git", "__pycache__", ".vscode"]
         
     def clear_screen(self):
@@ -23,24 +25,49 @@ class LoraSync:
         else:
             os.system("clear")
     
-    def extract_family_name(self, config_path: Path) -> str:
-        """Extract the family name (prefix) from a config path."""
-        # Extract just the base family name (e.g., "sofia" from "sofia_001_...")
-        return config_path.name.split('_')[0]
+    def verify_dropbox_connection(self) -> bool:
+        """Verify that Dropbox is accessible."""
+        try:
+            # Quick dbx connection check
+            result = subprocess.run(
+                ["rclone", "lsf", "dbx:/", "--max-depth", "1"],
+                check=True,
+                capture_output=True,
+                timeout=10
+            )
+            return True
+        except subprocess.TimeoutExpired:
+            self.console.print("[yellow]Warning: Dropbox connection check timed out. Will skip Dropbox uploads.[/yellow]")
+            return False
+        except subprocess.CalledProcessError:
+            self.console.print("[yellow]Warning: Cannot connect to Dropbox. Will skip Dropbox uploads.[/yellow]")
+            return False
+        except Exception as e:
+            self.console.print(f"[yellow]Warning when checking Dropbox connection: {str(e)}. Will skip Dropbox uploads.[/yellow]")
+            return False
     
     def get_unique_families(self) -> Dict[str, List[Path]]:
-        """Get only unique family names (prefixes) and group configs by family."""
-        configs = [
-            d for d in self.base_path.iterdir()
-            if d.is_dir() and d.name not in self.excluded_dirs
-        ]
-        
+        """Get unique family names and group configs by family."""
         families = {}
-        for config in configs:
-            family_name = self.extract_family_name(config)
-            if family_name not in families:
-                families[family_name] = []
-            families[family_name].append(config)
+        
+        # Check if the base directory exists
+        if not self.base_path.exists():
+            self.console.print(f"[red]Error: Path {self.base_path} does not exist[/red]")
+            return families
+            
+        # List all subdirectories (families) in the base directory
+        for family_dir in [d for d in self.base_path.iterdir() if d.is_dir() and d.name not in self.excluded_dirs]:
+            family_name = family_dir.name
+            
+            # Find all configuration directories inside this family directory
+            configs = []
+            for config_dir in family_dir.iterdir():
+                if config_dir.is_dir() and config_dir.name not in self.excluded_dirs:
+                    configs.append(config_dir)
+            
+            if configs:
+                families[family_name] = configs
+        
         return families
     
     def display_unique_families(self, families: Dict[str, List[Path]]) -> List[str]:
@@ -119,75 +146,85 @@ class LoraSync:
         
         return configs
     
-    def sync_lora_to_dropbox(self, config_path: Path) -> bool:
-        """Sync a LoRA from SimpleTuner to Dropbox."""
+    def sync_to_dropbox(self, family_name: str, config_path: Optional[Path] = None) -> bool:
+        """Sync a model family or specific config to Dropbox using rclone sync."""
         try:
-            # Find the highest checkpoint in the config directory
-            checkpoints = [d for d in config_path.iterdir() if d.is_dir() and d.name.startswith("checkpoint-")]
-            if not checkpoints:
-                self.console.print(f"[red]No checkpoints found in {config_path}[/red]")
+            # Check if Dropbox is accessible
+            if not self.verify_dropbox_connection():
+                self.console.print("[red]Cannot connect to Dropbox. Aborting sync.[/red]")
                 return False
             
-            # Sort checkpoints by numeric value
-            highest_checkpoint = sorted(checkpoints, key=lambda x: int(x.name.split("-")[1]))[-1]
+            if config_path:
+                # Syncing a specific config
+                source_path = str(config_path)
+                dest_path = f"{self.dropbox_path}/{family_name}/{config_path.name}"
+                self.console.print(f"[cyan]Syncing config: {config_path.name}[/cyan]")
+            else:
+                # Syncing an entire family
+                source_path = str(self.base_path / family_name)
+                dest_path = f"{self.dropbox_path}/{family_name}"
+                self.console.print(f"[cyan]Syncing entire family: {family_name}[/cyan]")
             
-            # Look for safetensors file
-            safetensor_path = highest_checkpoint / "pytorch_lora_weights.safetensors"
-            if not safetensor_path.exists():
-                self.console.print(f"[red]No pytorch_lora_weights.safetensors found in {highest_checkpoint}[/red]")
-                return False
+            self.console.print(f"[cyan]From:[/cyan] {source_path}")
+            self.console.print(f"[cyan]To:[/cyan] {dest_path}")
             
-            # Get the family name
-            family_name = self.extract_family_name(config_path)
+            # Using subprocess to run rclone sync
+            cmd = [
+                "rclone",
+                "sync",
+                "--progress",
+                source_path,
+                dest_path
+            ]
             
-            # Determine Dropbox destination path
-            dbx_base_path = f"/studio/ai/data/1models/013-{family_name.capitalize()}/3loras"
-            target_filename = f"{family_name}_{config_path.name}.safetensors"
-            dbx_target_path = f"{dbx_base_path}/{target_filename}"
-            
-            # Sync to Dropbox
-            self.console.print(f"[cyan]Syncing {safetensor_path} to Dropbox: {dbx_target_path}[/cyan]")
-            
-            # Using subprocess to run rclone
-            result = subprocess.run(
-                ["rclone", "copy", str(safetensor_path), f"dbx:{dbx_base_path}",
-                 "--progress", "--update", "--verbose", "--stats", "1s", "--stats-one-line"],
-                capture_output=True,
-                text=True
+            # Execute rclone and capture real-time output
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True
             )
             
-            if result.returncode == 0:
-                self.console.print(f"[green]Successfully synced to Dropbox: {dbx_target_path}[/green]")
+            # Show output in real-time
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    print(output.strip())
+            
+            if process.returncode == 0:
+                self.console.print(f"[green]Successfully synced to Dropbox[/green]")
                 return True
             else:
-                self.console.print(f"[red]Failed to sync to Dropbox. Error: {result.stderr}[/red]")
+                self.console.print(f"[red]Failed to sync to Dropbox[/red]")
                 return False
             
         except Exception as e:
-            self.console.print(f"[red]Error syncing LoRA: {str(e)}[/red]")
+            self.console.print(f"[red]Error syncing to Dropbox: {str(e)}[/red]")
             return False
     
     def process_family_configs(self, family_name: str, configs: List[Path]):
         """Process all configs in a family."""
         self.console.print(f"\n[cyan]Processing all configs for {family_name}...[/cyan]")
-        success_count = 0
         
-        for config in configs:
-            result = self.sync_lora_to_dropbox(config)
-            if result:
-                success_count += 1
-        
-        self.console.print(f"[green]Successfully synced {success_count}/{len(configs)} LoRAs to Dropbox[/green]")
-    
-    def process_single_config(self, config_path: Path):
-        """Process a single config."""
-        self.console.print(f"\n[cyan]Processing config: {config_path.name}[/cyan]")
-        result = self.sync_lora_to_dropbox(config_path)
+        # Use rclone sync to sync the entire family directory at once
+        result = self.sync_to_dropbox(family_name)
         
         if result:
-            self.console.print(f"[green]Successfully synced LoRA to Dropbox[/green]")
+            self.console.print(f"[green]Successfully synced family {family_name} to Dropbox[/green]")
         else:
-            self.console.print(f"[red]Failed to sync LoRA to Dropbox[/red]")
+            self.console.print(f"[red]Failed to sync family {family_name} to Dropbox[/red]")
+    
+    def process_single_config(self, family_name: str, config_path: Path):
+        """Process a single config."""
+        self.console.print(f"\n[cyan]Processing config: {config_path.name}[/cyan]")
+        result = self.sync_to_dropbox(family_name, config_path)
+        
+        if result:
+            self.console.print(f"[green]Successfully synced config to Dropbox[/green]")
+        else:
+            self.console.print(f"[red]Failed to sync config to Dropbox[/red]")
     
     def run(self):
         """Run the LoRA sync tool with the two-step UI pattern."""
@@ -198,7 +235,7 @@ class LoraSync:
         # Get and display unique family names
         family_groups = self.get_unique_families()
         if not family_groups:
-            self.console.print("[red]No configuration families found in SimpleTuner output directory[/red]")
+            self.console.print("[red]No configuration families found in ComfyUI loras directory[/red]")
             input("\nPress Enter to continue...")
             return
         
@@ -236,7 +273,7 @@ class LoraSync:
                     self.process_family_configs(selected_family, family_configs)
                 elif 2 <= config_idx <= len(family_configs) + 1:  # +1 for "all" option
                     selected_config = family_configs[config_idx - 2]  # -2 to adjust for "all" and 0-indexing
-                    self.process_single_config(selected_config)
+                    self.process_single_config(selected_family, selected_config)
                 else:
                     self.console.print("[red]Invalid selection[/red]")
             except ValueError:
@@ -247,5 +284,16 @@ class LoraSync:
         input("\nPress Enter to continue...")
 
 if __name__ == "__main__":
-    sync = LoraSync()
-    sync.run()
+    try:
+        sync = LoraSync()
+        sync.run()
+    except KeyboardInterrupt:
+        print("\nOperation canceled by user.")
+        sys.exit(0)
+    except Exception as e:
+        console = Console(stderr=True)
+        console.print(f"[red]Fatal error:[/red]")
+        console.print(f"[red]{str(e)}[/red]")
+        import traceback
+        console.print(traceback.format_exc())
+        input("Press Enter to exit...")
