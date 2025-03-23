@@ -3,18 +3,22 @@ import sys
 import platform
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.columns import Columns
+from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
-class LoraSync:
+class OutputDownloader:
     def __init__(self, base_path: Optional[Path] = None):
         self.console = Console()
         self.base_path = base_path or Path("/workspace/SimpleTuner/output")
         self.excluded_dirs = [".git", "__pycache__", ".vscode"]
+        self.excluded_folders = ["validation_images"]
+        self.excluded_files = ["pytorch_lora_weights.safetensors"]
         
     def clear_screen(self):
         """Clear the terminal screen."""
@@ -119,52 +123,114 @@ class LoraSync:
         
         return configs
     
-    def sync_lora_to_dropbox(self, config_path: Path) -> bool:
-        """Sync a LoRA from SimpleTuner to Dropbox."""
+    def get_highest_checkpoint(self, config_path: Path) -> Optional[Path]:
+        """Find the highest checkpoint in a config directory."""
+        checkpoints = [
+            d for d in config_path.iterdir() 
+            if d.is_dir() and d.name.startswith("checkpoint-")
+        ]
+        
+        if not checkpoints:
+            return None
+        
+        # Sort checkpoints by numeric value
+        highest_checkpoint = sorted(
+            checkpoints, 
+            key=lambda x: int(x.name.split("-")[1])
+        )[-1]
+        
+        return highest_checkpoint
+    
+    def create_filtered_temp_directory(self, config_path: Path) -> Tuple[Path, str]:
+        """
+        Create a temporary directory with filtered content.
+        Returns the temp dir path and highest checkpoint number.
+        """
+        # Create temp directory
+        temp_dir = Path(tempfile.mkdtemp())
+        
+        # Get highest checkpoint
+        highest_checkpoint = self.get_highest_checkpoint(config_path)
+        if not highest_checkpoint:
+            raise ValueError(f"No checkpoints found in {config_path}")
+        
+        checkpoint_number = highest_checkpoint.name.split("-")[1]
+        
+        # Create the filtered content structure
+        for item in config_path.iterdir():
+            # Skip excluded folders
+            if item.is_dir() and item.name in self.excluded_folders:
+                continue
+                
+            # Skip lower checkpoints, only keep highest
+            if item.is_dir() and item.name.startswith("checkpoint-"):
+                if item != highest_checkpoint:
+                    continue
+            
+            # Create a corresponding item in the temp directory
+            dest_item = temp_dir / item.name
+            
+            if item.is_dir():
+                # Copy directory, excluding the excluded files
+                shutil.copytree(
+                    item, 
+                    dest_item,
+                    ignore=lambda src, names: [
+                        n for n in names if n in self.excluded_files
+                    ]
+                )
+            elif item.is_file() and item.name not in self.excluded_files:
+                # Copy file if not excluded
+                shutil.copy2(item, dest_item)
+        
+        return temp_dir, checkpoint_number
+    
+    def download_output_to_dropbox(self, config_path: Path) -> bool:
+        """Download config output data to Dropbox with filtering applied."""
         try:
-            # Find the highest checkpoint in the config directory
-            checkpoints = [d for d in config_path.iterdir() if d.is_dir() and d.name.startswith("checkpoint-")]
-            if not checkpoints:
-                self.console.print(f"[red]No checkpoints found in {config_path}[/red]")
-                return False
-            
-            # Sort checkpoints by numeric value
-            highest_checkpoint = sorted(checkpoints, key=lambda x: int(x.name.split("-")[1]))[-1]
-            
-            # Look for safetensors file
-            safetensor_path = highest_checkpoint / "pytorch_lora_weights.safetensors"
-            if not safetensor_path.exists():
-                self.console.print(f"[red]No pytorch_lora_weights.safetensors found in {highest_checkpoint}[/red]")
-                return False
-            
-            # Get the family name
             family_name = self.extract_family_name(config_path)
             
+            # Create filtered temp directory
+            self.console.print(f"[cyan]Creating filtered copy of {config_path.name}...[/cyan]")
+            temp_dir, checkpoint_number = self.create_filtered_temp_directory(config_path)
+            
             # Determine Dropbox destination path
-            dbx_base_path = f"/studio/ai/data/1models/013-{family_name.capitalize()}/3loras"
-            target_filename = f"{family_name}_{config_path.name}.safetensors"
-            dbx_target_path = f"{dbx_base_path}/{target_filename}"
+            dbx_base_path = f"/studio/ai/data/1models/013-{family_name.capitalize()}/4training/output/{config_path.name}"
             
             # Sync to Dropbox
-            self.console.print(f"[cyan]Syncing {safetensor_path} to Dropbox: {dbx_target_path}[/cyan]")
+            self.console.print(f"[cyan]Uploading filtered output to Dropbox: {dbx_base_path}[/cyan]")
             
             # Using subprocess to run rclone
-            result = subprocess.run(
-                ["rclone", "copy", str(safetensor_path), f"dbx:{dbx_base_path}",
-                 "--progress", "--update", "--verbose", "--stats", "1s", "--stats-one-line"],
-                capture_output=True,
-                text=True
-            )
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeRemainingColumn(),
+                console=self.console
+            ) as progress:
+                task = progress.add_task(f"Uploading {config_path.name} (highest checkpoint: {checkpoint_number})", total=1)
+                
+                result = subprocess.run(
+                    ["rclone", "copy", str(temp_dir), f"dbx:{dbx_base_path}",
+                     "--progress", "--update", "--verbose", "--stats", "1s", "--stats-one-line"],
+                    capture_output=True,
+                    text=True
+                )
+                
+                progress.update(task, completed=1)
+            
+            # Clean up temp directory
+            shutil.rmtree(temp_dir)
             
             if result.returncode == 0:
-                self.console.print(f"[green]Successfully synced to Dropbox: {dbx_target_path}[/green]")
+                self.console.print(f"[green]Successfully uploaded output to Dropbox: {dbx_base_path}[/green]")
                 return True
             else:
-                self.console.print(f"[red]Failed to sync to Dropbox. Error: {result.stderr}[/red]")
+                self.console.print(f"[red]Failed to upload to Dropbox. Error: {result.stderr}[/red]")
                 return False
             
         except Exception as e:
-            self.console.print(f"[red]Error syncing LoRA: {str(e)}[/red]")
+            self.console.print(f"[red]Error downloading output: {str(e)}[/red]")
             return False
     
     def process_family_configs(self, family_name: str, configs: List[Path]):
@@ -173,26 +239,26 @@ class LoraSync:
         success_count = 0
         
         for config in configs:
-            result = self.sync_lora_to_dropbox(config)
+            result = self.download_output_to_dropbox(config)
             if result:
                 success_count += 1
         
-        self.console.print(f"[green]Successfully synced {success_count}/{len(configs)} LoRAs to Dropbox[/green]")
+        self.console.print(f"[green]Successfully downloaded {success_count}/{len(configs)} config outputs to Dropbox[/green]")
     
     def process_single_config(self, config_path: Path):
         """Process a single config."""
         self.console.print(f"\n[cyan]Processing config: {config_path.name}[/cyan]")
-        result = self.sync_lora_to_dropbox(config_path)
+        result = self.download_output_to_dropbox(config_path)
         
         if result:
-            self.console.print(f"[green]Successfully synced LoRA to Dropbox[/green]")
+            self.console.print(f"[green]Successfully downloaded output to Dropbox[/green]")
         else:
-            self.console.print(f"[red]Failed to sync LoRA to Dropbox[/red]")
+            self.console.print(f"[red]Failed to download output to Dropbox[/red]")
     
     def run(self):
-        """Run the LoRA sync tool with the two-step UI pattern."""
+        """Run the output downloader tool with the two-step UI pattern."""
         self.clear_screen()
-        self.console.print("[cyan]Loading tool: LoRA Sync[/cyan]")
+        self.console.print("[cyan]Loading tool: Output Downloader[/cyan]")
         print()
         
         # Get and display unique family names
@@ -220,13 +286,13 @@ class LoraSync:
             
             # Show configs for selected family
             self.clear_screen()
-            self.console.print("[cyan]Loading tool: LoRA Sync[/cyan]")
+            self.console.print("[cyan]Loading tool: Output Downloader[/cyan]")
             print()
             
             family_configs = self.display_family_configs(selected_family, family_groups[selected_family])
             
             # Get config selection
-            config_selection = input(f"\nEnter config number to process from {selected_family} (or press Enter to go back): ").strip()
+            config_selection = input(f"\nEnter config number to download output from {selected_family} (or press Enter to go back): ").strip()
             if not config_selection:
                 return
             
@@ -247,5 +313,5 @@ class LoraSync:
         input("\nPress Enter to continue...")
 
 if __name__ == "__main__":
-    sync = LoraSync()
-    sync.run()
+    downloader = OutputDownloader()
+    downloader.run()
