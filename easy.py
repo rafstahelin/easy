@@ -260,6 +260,7 @@ def help(args=None):
             "lm": "LoRA mover (specific functionality not documented)",
             "ls": "LoRA sync (specific functionality not documented)",
             "dc": "Download configuration files",
+            "do": "Download output files from training",
             "vg": "Run validation grid",
             "dg": "Run dataset grid",
             "pp": "Run post process",
@@ -308,6 +309,12 @@ def dataset_grid():
     response.print(f"Running dataset_grid from {script_path}", "i")
     subprocess.run([sys.executable, script_path])
 
+def download_output():
+    # Use the full path to the script
+    script_path = str(Path(__file__).parent / "classes" / "download_output.py")
+    response.print(f"Running download_output from {script_path}", "i")
+    subprocess.run([sys.executable, script_path])
+
 def post_process():
     lora_mover()
     download_configs()
@@ -334,6 +341,7 @@ def run():
             "lm": lora_mover,
             "ls": lora_sync,
             "dc": download_configs,
+            "do": download_output,
             "vg": validation_grid,
             "dg": dataset_grid,
             "pp": post_process,
