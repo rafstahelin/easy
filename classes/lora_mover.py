@@ -1,42 +1,153 @@
-#  copy dbx not working double... 20250130 ...
-
 import os
+import sys
+import platform
 import shutil
-import time
 import subprocess
+import time
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 from rich.console import Console
-from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 from rich.columns import Columns
-from rich import print as rprint
-from rich.prompt import Prompt
-# from metadata_handler import MetadataHandler
+from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn
 
-class LoRaMover:
-    def __init__(self):
+class LoraMover:
+    def __init__(self, base_path: Optional[Path] = None):
         self.console = Console()
-        self.base_path = Path.cwd()
-        self.destination_base = Path('/workspace/ComfyUI/models/loras/flux')
-        # self.metadata_handler = MetadataHandler()
-
-    def clear_screen(self):
-        """Clear terminal screen."""
-        os.system('clear' if os.name == 'posix' else 'cls')
-
-    def verify_paths(self) -> bool:
-        """Verify that required paths exist."""
-        if not self.base_path.exists():
-            rprint(f"[red]Error: Directory {self.base_path} does not exist[/red]")
-            return False
+        self.base_path = base_path or Path("/workspace/SimpleTuner/output")
+        self.comfy_path = Path("/workspace/ComfyUI/models/loras/flux-train")
+        self.dropbox_path = "dbx:/studio/ai/libs/diffusion-models/models/loras/flux-train"
+        self.excluded_dirs = [".git", "__pycache__", ".vscode"]
         
-        # Create destination base if it doesn't exist
-        self.destination_base.mkdir(parents=True, exist_ok=True)
-        return True
-
-    def show_progress(self, description: str, file_count: int) -> None:
+    def clear_screen(self):
+        """Clear the terminal screen."""
+        if platform.system() == "Windows":
+            os.system("cls")
+        else:
+            os.system("clear")
+    
+    def verify_dropbox_connection(self) -> bool:
+        """Verify that Dropbox is accessible."""
+        try:
+            # Quick dbx connection check
+            result = subprocess.run(
+                ["rclone", "lsf", "dbx:/", "--max-depth", "1"],
+                check=True,
+                capture_output=True,
+                timeout=10
+            )
+            return True
+        except subprocess.TimeoutExpired:
+            self.console.print("[yellow]Warning: Dropbox connection check timed out. Will skip Dropbox uploads.[/yellow]")
+            return False
+        except subprocess.CalledProcessError:
+            self.console.print("[yellow]Warning: Cannot connect to Dropbox. Will skip Dropbox uploads.[/yellow]")
+            return False
+        except Exception as e:
+            self.console.print(f"[yellow]Warning when checking Dropbox connection: {str(e)}. Will skip Dropbox uploads.[/yellow]")
+            return False
+    
+    def extract_family_name(self, config_path: Path) -> str:
+        """Extract the family name (prefix) from a config path."""
+        # Extract just the base family name (e.g., "sofia" from "sofia_001_...")
+        return config_path.name.split('_')[0] if '_' in config_path.name else config_path.name
+    
+    def get_unique_families(self) -> Dict[str, List[Path]]:
+        """Get only unique family names (prefixes) and group configs by family."""
+        families = {}
+        
+        # First, check if the output directory has family subdirectories
+        for family_dir in [d for d in self.base_path.iterdir() if d.is_dir() and d.name not in self.excluded_dirs]:
+            family_name = family_dir.name
+            # Look for config directories inside the family directory
+            configs = []
+            for config_dir in family_dir.iterdir():
+                if config_dir.is_dir():
+                    configs.append(config_dir)
+            
+            if configs:
+                families[family_name] = configs
+        
+        return families
+    
+    def display_unique_families(self, families: Dict[str, List[Path]]) -> List[str]:
+        """Display only unique family names in a two-column layout."""
+        family_names = sorted(families.keys())
+        
+        # Create tables for two columns
+        table1 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table1.add_column("Family", style="white", no_wrap=True)
+        
+        table2 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table2.add_column("Family", style="white", no_wrap=True)
+        
+        # Split families into two columns
+        mid_point = (len(family_names) + 1) // 2
+        left_families = family_names[:mid_point]
+        right_families = family_names[mid_point:]
+        
+        # Add families to first column
+        for idx, family in enumerate(left_families, 1):
+            table1.add_row(f"[yellow]{idx}.[/yellow] {family}")
+        
+        # Add families to second column
+        for idx, family in enumerate(right_families, mid_point + 1):
+            table2.add_row(f"[yellow]{idx}.[/yellow] {family}")
+        
+        # Create panel with both columns
+        panel = Panel(
+            Columns([table1, table2], equal=True, expand=True),
+            title="[gold1]Available Configurations[/gold1]",
+            border_style="blue"
+        )
+        self.console.print(panel)
+        
+        return family_names
+    
+    def display_family_configs(self, family_name: str, configs: List[Path]) -> List[Path]:
+        """Display all configs for a specific family in a two-column layout."""
+        configs = sorted(configs, key=lambda x: x.name)
+        
+        # Create tables for two columns
+        table1 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table1.add_column("Config", style="white", no_wrap=True)
+        
+        table2 = Table(show_header=False, box=None, show_edge=False, padding=(1, 1))
+        table2.add_column("Config", style="white", no_wrap=True)
+        
+        # First option is always "all"
+        table1.add_row(f"[yellow]1.[/yellow] all")
+        
+        # Split configs into two columns (after accounting for "all")
+        if len(configs) <= 7:
+            # For small number of configs, keep them all in first column
+            for idx, config in enumerate(configs, 2):
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+        else:
+            # For larger numbers, balance the columns
+            mid_point = len(configs) // 2
+            
+            # Add first half to left column (after "all")
+            for idx, config in enumerate(configs[:mid_point], 2):
+                table1.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+            
+            # Add second half to right column
+            start_idx = mid_point + 2  # +2 to account for "all" and 0-indexing
+            for idx, config in enumerate(configs[mid_point:], start_idx):
+                table2.add_row(f"[yellow]{idx}.[/yellow] {config.name}")
+        
+        # Create panel with both columns
+        panel = Panel(
+            Columns([table1, table2], equal=True, expand=True),
+            title=f"[gold1]{family_name} Configs[/gold1]",
+            border_style="blue"
+        )
+        self.console.print(panel)
+        
+        return configs
+    
+    def show_progress(self, description: str, total: int = 100) -> None:
         """Show a progress bar with the given description."""
         with Progress(
             TextColumn("[bold blue]{task.description}"),
@@ -45,152 +156,31 @@ class LoRaMover:
             console=self.console,
             transient=True
         ) as progress:
-            task = progress.add_task(description, total=file_count)
+            task = progress.add_task(description, total=total)
             while not progress.finished:
                 progress.update(task, advance=1)
                 time.sleep(0.02)
-
-    def list_model_paths(self) -> List[str]:
-        """Scan current directory for model paths and display them in a formatted table."""
+    
+    def upload_to_dropbox(self, renamed_file_path: Path, family_name: str, config_name: str) -> bool:
+        """Upload a renamed file from ComfyUI directory to Dropbox."""
         try:
-            model_paths = [f.name for f in self.base_path.iterdir() 
-                         if f.is_dir() and f.name not in ['.ipynb_checkpoints']]
+            # Construct the destination path in Dropbox exactly mirroring the ComfyUI path
+            dbx_destination_dir = f"{self.dropbox_path}/{family_name}/{config_name}"
             
-            if not model_paths:
-                rprint("[yellow]No model paths found in current directory[/yellow]")
-                return []
+            self.console.print(f"[cyan]Uploading {renamed_file_path.name} to Dropbox...[/cyan]")
+            
+            # Using subprocess to run rclone
+            try:
+                # Use rclone to copy the file to Dropbox
+                cmd = [
+                    "rclone",
+                    "copy",
+                    "--progress",
+                    str(renamed_file_path),
+                    f"{dbx_destination_dir}"
+                ]
                 
-            rprint("[cyan]Available Models:[/cyan]")
-            return self._display_items_in_panels(model_paths, "Available Models")
-        except Exception as e:
-            rprint(f"[red]Error scanning directory: {str(e)}[/red]")
-            return []
-
-    def list_model_versions(self, model_path: str) -> List[str]:
-        """Scan selected model path for versions and display them in a formatted table."""
-        try:
-            version_path = self.base_path / model_path
-            versions = [f.name for f in version_path.iterdir() 
-                      if f.is_dir() and f.name not in ['.ipynb_checkpoints']]
-            
-            if not versions:
-                rprint(f"[yellow]No versions found for model {model_path}[/yellow]")
-                return []
-                
-            rprint(f"\n[cyan]Available Versions for {model_path}:[/cyan]")
-            return self._display_items_in_panels(versions, f"Available Versions for {model_path}")
-        except Exception as e:
-            rprint(f"[red]Error scanning versions: {str(e)}[/red]")
-            return []
-
-    def _display_items_in_panels(self, items: List[str], title: str) -> List[str]:
-        """Display items in panels, with special handling for versions."""
-        # Check if we're displaying versions
-        is_versions_display = "Versions" in title
-        
-        if is_versions_display:
-            # For versions, create a single panel with all versions
-            table = Table(show_header=False, show_edge=False, box=None, padding=(0,1))
-            table.add_column(justify="left", no_wrap=False, overflow='fold', max_width=30)
-            
-            # Extract model name from title
-            model_name = title.split("for ")[-1]
-            
-            # Sort versions for display (reverse order)
-            ordered_items = sorted(items, key=str.lower, reverse=True)
-            
-            # Add rows in chronological order
-            for idx, item in enumerate(ordered_items, 1):
-                table.add_row(f"[yellow]{idx}. {item}[/yellow]")
-            
-            # Create single panel with model name as title
-            panel = Panel(table, title=f"[magenta]{model_name}[/magenta]", 
-                         border_style="blue", width=36)
-            
-            # Create row with one filled panel and two empty panels
-            panels = [
-                panel,
-                Panel("", border_style="blue", width=36),
-                Panel("", border_style="blue", width=36)
-            ]
-            self.console.print(Columns(panels, equal=True, expand=True))
-            
-            return ordered_items
-        else:
-            # Original grouping logic for non-version displays
-            grouped = {}
-            for item in sorted(items):
-                base_name = item.split('-', 1)[0]
-                grouped.setdefault(base_name, []).append(item)
-
-            panels = []
-            ordered_items = []
-            index = 1
-
-            for base_name in sorted(grouped.keys()):
-                table = Table(show_header=False, show_edge=False, box=None, padding=(0,1))
-                table.add_column(justify="left", no_wrap=False, overflow='fold', max_width=30)
-                
-                for item in sorted(grouped[base_name], key=str.lower, reverse=True):
-                    table.add_row(f"[yellow]{index}. {item}[/yellow]")
-                    ordered_items.append(item)
-                    index += 1
-
-                panels.append(Panel(table, title=f"[magenta]{base_name}[/magenta]", 
-                                  border_style="blue", width=36))
-
-            panels_per_row = 3
-            for i in range(0, len(panels), panels_per_row):
-                row_panels = panels[i:i + panels_per_row]
-                while len(row_panels) < panels_per_row:
-                    row_panels.append(Panel("", border_style="blue", width=36))
-                self.console.print(Columns(row_panels, equal=True, expand=True))
-
-            return ordered_items
-
-    def sync_to_dropbox(self, model_path: str, is_single_version: bool = False) -> None:
-        try:
-            source_path = str(self.destination_base / model_path)
-            destination = f"dbx:/studio/ai/libs/diffusion-models/models/loras/flux/{model_path}"
-            
-            # First, get list of files to be transferred
-            cmd_check = [
-                "rclone",
-                "lsf",
-                source_path,
-                "--files-only",
-                "-R"
-            ]
-            
-            files_to_transfer = subprocess.check_output(cmd_check, 
-                                                      universal_newlines=True).splitlines()
-            
-            if not files_to_transfer:
-                rprint("[yellow]No files to transfer[/yellow]")
-                return
-                
-            rprint(f"[yellow]Found {len(files_to_transfer)} files to process[/yellow]")
-            
-            # Run transfer with simpler progress tracking
-            cmd = [
-                "rclone",
-                "copy",
-                "--checksum",
-                source_path,
-                destination,
-                "--ignore-existing",
-                "-P"
-            ]
-            
-            with Progress(
-                TextColumn("[bold blue]{task.description}"),
-                BarColumn(complete_style="green"),
-                TaskProgressColumn(),
-                console=self.console,
-                transient=True
-            ) as progress:
-                task = progress.add_task(f"[cyan]Uploading {model_path}", total=100)
-                
+                # Execute rclone and capture real-time output
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -198,231 +188,179 @@ class LoRaMover:
                     universal_newlines=True
                 )
                 
-                # Update progress in chunks
-                for _ in range(100):
-                    if process.poll() is not None:
+                # Show output in real-time
+                while True:
+                    output = process.stdout.readline()
+                    if output == '' and process.poll() is not None:
                         break
-                    progress.update(task, advance=1)
-                    time.sleep(0.1)
-                
-                # Ensure process completes
-                process.wait()
+                    if output:
+                        print(output.strip())
                 
                 if process.returncode == 0:
-                    progress.update(task, completed=100)
-                    rprint("\n[green]Dropbox synchronization completed successfully![/green]")
+                    self.console.print(f"[green]Successfully uploaded {renamed_file_path.name} to Dropbox[/green]")
+                    return True
                 else:
-                    rprint("\n[red]Error during Dropbox synchronization[/red]")
+                    self.console.print(f"[red]Failed to upload {renamed_file_path.name} to Dropbox[/red]")
+                    return False
                     
-        except Exception as e:
-            rprint(f"[red]Error during Dropbox sync: {str(e)}[/red]")
-
-    def process_safetensors(self, source_path: Path, dest_path: Path, 
-                            model_name: str, version: str) -> int:
-            """Process and copy safetensors files with proper naming."""
-            try:
-                processed_count = 0
-                
-                # Construct the full model path for metadata
-                full_model_path = f"{model_name}_{version}"
-                
-                # # Get metadata once for all checkpoints
-                # metadata = self.metadata_handler.create_metadata(full_model_path)
-                # if metadata:
-                #     self.console.print("[cyan]Extracted training configuration[/cyan]")
-                # else:
-                #     self.console.print("[yellow]Warning: Could not extract metadata[/yellow]")
-                
-                checkpoints = [d for d in source_path.iterdir() if d.is_dir() 
-                            and d.name.startswith('checkpoint-')]
-                
-                for checkpoint_dir in sorted(checkpoints):
-                    step_count = checkpoint_dir.name.split('-')[1]
-                    step_count = str(int(step_count)).zfill(5)
-                    
-                    source_file = checkpoint_dir / "pytorch_lora_weights.safetensors"
-                    if source_file.exists():
-                        new_filename = f"{model_name}-{version}-{step_count}.safetensors"
-                        # version_path = dest_path / model_name / version  # Creates /flux/amodelmelia/version_number/
-                        dest_file = dest_path / new_filename
-                        
-                        # Create destination directory if it doesn't exist
-                        dest_file.parent.mkdir(parents=True, exist_ok=True)
-                        
-                        # Copy the file first
-                        shutil.copy2(source_file, dest_file)
-                        
-                        # # Update metadata if available
-                        # if metadata:
-                        #     if self.metadata_handler.update_safetensors_metadata(dest_file, metadata):
-                        #         self.console.print(f"[green]Updated metadata for {new_filename}[/green]")
-                        #     else:
-                        #         self.console.print(f"[yellow]Warning: Failed to update metadata for {new_filename}[/yellow]")
-                        
-                        processed_count += 1
-                        rprint(f"[green]Copied: {new_filename}[/green]")
-                        
-                return processed_count
             except Exception as e:
-                rprint(f"[red]Error processing safetensors: {str(e)}[/red]")
-                if self.console.is_debug:
-                    import traceback
-                    rprint(f"[dim]{traceback.format_exc()}[/dim]")
-                return 0
-
-    def process_single_version(self):
-        """Handle processing of a single model version."""
-        model_paths = self.list_model_paths()
-        if not model_paths:
-            return
-
-        model_num = Prompt.ask("\nEnter number to select model path").strip()
-        if not model_num:
-            rprint("[red]Exited--no input given[/red]")
-            return
-
-        try:
-            selected_model = model_paths[int(model_num) - 1]
-        except (ValueError, IndexError):
-            rprint("[red]Invalid selection[/red]")
-            return
-
-        versions = self.list_model_versions(selected_model)
-        if not versions:
-            return
-
-        version_num = Prompt.ask("\nEnter number to select version").strip()
-        if not version_num:
-            rprint("[red]Exited--no input given[/red]")
-            return
-
-        try:
-            selected_version = versions[int(version_num) - 1]
-        except (ValueError, IndexError):
-            rprint("[red]Invalid selection[/red]")
-            return
-
-        # Process the selected version
-        source_path = self.base_path / selected_model / selected_version
-        dest_path = self.destination_base / selected_model / selected_version
-        
-        rprint(f"\n[cyan]Processing version {selected_version} of {selected_model}...[/cyan]")
-        files_processed = self.process_safetensors(source_path, dest_path, 
-                                                 selected_model, selected_version)
-        if files_processed > 0:
-            self.show_progress("Processing complete", 100)
-            rprint(f"[green]Successfully processed {files_processed} files![/green]")
+                self.console.print(f"[red]Error uploading to Dropbox: {str(e)}[/red]")
+                return False
             
-            # Sync to Dropbox - for single version, we use the full path including version
-            sync_path = f"{selected_model}/{selected_version}"
-            self.sync_to_dropbox(sync_path, is_single_version=True)
-        else:
-            rprint("[yellow]No files were processed[/yellow]")
-
-    def process_all_versions(self):
-        """Handle processing of all versions for a selected model."""
-        model_paths = self.list_model_paths()
-        if not model_paths:
-            return
-
-        model_num = Prompt.ask("\nEnter number to select model path").strip()
-        if not model_num:
-            rprint("[red]Exited--no input given[/red]")
-            return
-
+        except Exception as e:
+            self.console.print(f"[red]Error preparing Dropbox upload: {str(e)}[/red]")
+            return False
+    
+    def move_lora_to_comfy(self, config_path: Path) -> bool:
+        """Process all checkpoints from a config and move to ComfyUI with proper naming."""
         try:
-            selected_model = model_paths[int(model_num) - 1]
-        except (ValueError, IndexError):
-            rprint("[red]Invalid selection[/red]")
-            return
-
-        model_path = self.base_path / selected_model
-        versions = [d.name for d in model_path.iterdir() 
-                   if d.is_dir() and d.name != '.ipynb_checkpoints']
-        
-        if not versions:
-            rprint(f"[yellow]No versions found for model {selected_model}[/yellow]")
-            return
-
-        total_processed = 0
-        rprint(f"\n[cyan]Processing all versions of {selected_model}...[/cyan]")
-        for version in sorted(versions, reverse=True):  # Process versions in reverse order
-            source_path = model_path / version
-            dest_path = self.destination_base / selected_model / version
-            rprint(f"[yellow]Processing version {version}...[/yellow]")
-            files_processed = self.process_safetensors(source_path, dest_path, 
-                                                     selected_model, version)
-            total_processed += files_processed
-        
-        if total_processed > 0:
-            self.show_progress("Processing complete", 100)
-            rprint(f"[green]Successfully processed {total_processed} files across all versions![/green]")
+            # Check if Dropbox is accessible
+            dropbox_available = self.verify_dropbox_connection()
             
-            # Sync to Dropbox - for all versions, we sync the entire model directory
-            self.sync_to_dropbox(selected_model, is_single_version=False)
-        else:
-            rprint("[yellow]No files were processed[/yellow]")
-
-    def run(self):
-            """Main execution method."""
-            self.clear_screen()
+            # Find all checkpoint directories in the config directory
+            checkpoints = [d for d in config_path.iterdir() if d.is_dir() and d.name.startswith("checkpoint-")]
+            if not checkpoints:
+                self.console.print(f"[red]No checkpoints found in {config_path}[/red]")
+                return False
             
-            # Verify paths before proceeding
-            if not self.verify_paths():
-                return
+            # Get the family name from the parent directory
+            family_name = self.extract_family_name(config_path.parent)
+            config_name = config_path.name
+            
+            # Create the destination directory structure
+            dest_dir = self.comfy_path / family_name / config_name
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Process each checkpoint and copy with appropriate naming
+            processed_count = 0
+            uploaded_count = 0
+            
+            for checkpoint_dir in sorted(checkpoints, key=lambda x: int(x.name.split("-")[1])):
+                step_count = checkpoint_dir.name.split("-")[1]
+                step_count = str(int(step_count)).zfill(5)
                 
-            rprint("[magenta]=== LoRA Model Management Tool ===[/magenta]")
-            
-            rprint("\n[cyan]Select processing mode:[/cyan]")
-            rprint("[yellow]1. Process single version[/yellow]")
-            rprint("[yellow]2. Process all versions of a model[/yellow]")
-            
-            choice = Prompt.ask("\nEnter choice").strip()
-            if not choice:
-                rprint("[red]Exited--no input given[/red]")
-                return
-            
-            if choice == "1":
-                self.process_single_version()
-            elif choice == "2":
-                self.process_all_versions()
-            else:
-                rprint("[red]Invalid choice[/red]")
-                return
+                # Look for safetensors file
+                safetensor_path = checkpoint_dir / "pytorch_lora_weights.safetensors"
+                if safetensor_path.exists():
+                    # Create the target filename with the proper structure
+                    new_filename = f"{family_name}_{config_name}_{step_count}.safetensors"
 
-
-class Tool():
-    def __init__(self):
-        self.workspace_path = Path('/workspace')
-        self.tool_name = "LoRA Model Management Tool"
-        self.mover = LoRaMover()
-        self.mover.base_path = self.workspace_path / 'SimpleTuner/output'
-        self.mover.destination_base = self.workspace_path / 'ComfyUI/models/loras/flux'
-        
-    def run(self):
-        """Main process implementation."""
+                    target_path = dest_dir / new_filename
                     
-        rprint("[magenta]=== LoRA Model Management Tool ===[/magenta]")
+                    # Copy the file to ComfyUI
+                    shutil.copy2(safetensor_path, target_path)
+                    self.console.print(f"[green]Copied to {target_path}[/green]")
+                    processed_count += 1
+                    
+                    # Upload the renamed file to Dropbox if connection is available
+                    if dropbox_available:
+                        if self.upload_to_dropbox(target_path, family_name, config_name):
+                            uploaded_count += 1
+            
+            if processed_count > 0:
+                self.show_progress("Processing complete", 100)
+                self.console.print(f"[green]Successfully moved {processed_count} LoRAs to ComfyUI[/green]")
+                if dropbox_available:
+                    self.console.print(f"[green]Successfully uploaded {uploaded_count}/{processed_count} LoRAs to Dropbox[/green]")
+                return True
+            else:
+                self.console.print("[yellow]No safetensor files found to process[/yellow]")
+                return False
+            
+        except Exception as e:
+            self.console.print(f"[red]Error moving LoRA: {str(e)}[/red]")
+            return False
+    
+    def process_family_configs(self, family_name: str, configs: List[Path]):
+        """Process all configs in a family."""
+        self.console.print(f"\n[cyan]Processing all configs for {family_name}...[/cyan]")
+        success_count = 0
         
-        rprint("\n[cyan]Select processing mode:[/cyan]")
-        rprint("[yellow]1. Process single version[/yellow]")
-        rprint("[yellow]2. Process all versions of a model[/yellow]")
-        rprint("[cyan]Press Enter to return to main menu[/cyan]")
+        for config in configs:
+            result = self.move_lora_to_comfy(config)
+            if result:
+                success_count += 1
         
-        choice = Prompt.ask("\nEnter choice").strip()
-        if not choice:
-            self.exit_tool()
+        self.console.print(f"[green]Successfully processed {success_count}/{len(configs)} LoRAs to ComfyUI[/green]")
+    
+    def process_single_config(self, config_path: Path):
+        """Process a single config."""
+        self.console.print(f"\n[cyan]Processing config: {config_path.name}[/cyan]")
+        result = self.move_lora_to_comfy(config_path)
+        
+        if result:
+            self.console.print(f"[green]Successfully moved LoRA to ComfyUI[/green]")
+        else:
+            self.console.print(f"[red]Failed to move LoRA to ComfyUI[/red]")
+    
+    def run(self):
+        """Run the LoRA mover tool with the two-step UI pattern."""
+        self.clear_screen()
+        self.console.print("[cyan]Loading tool: LoRA Mover[/cyan]")
+        print()
+        
+        # Get and display unique family names
+        family_groups = self.get_unique_families()
+        if not family_groups:
+            self.console.print("[red]No configuration families found in SimpleTuner output directory[/red]")
+            input("\nPress Enter to continue...")
             return
         
-        if choice == "1":
-            self.mover.process_single_version()
-        elif choice == "2":
-            self.mover.process_all_versions()
-        else:
-            rprint("[red]Invalid choice[/red]")
-            time.sleep(1)
-
+        family_names = self.display_unique_families(family_groups)
+        
+        # Get family selection
+        family_selection = input("\nEnter config family number (or press Enter to exit): ").strip()
+        if not family_selection:
+            return
+        
+        try:
+            family_idx = int(family_selection) - 1
+            if not (0 <= family_idx < len(family_names)):
+                self.console.print("[red]Invalid selection[/red]")
+                input("\nPress Enter to continue...")
+                return
+            
+            selected_family = family_names[family_idx]
+            
+            # Show configs for selected family
+            self.clear_screen()
+            self.console.print("[cyan]Loading tool: LoRA Mover[/cyan]")
+            print()
+            
+            family_configs = self.display_family_configs(selected_family, family_groups[selected_family])
+            
+            # Get config selection
+            config_selection = input(f"\nEnter config number to process from {selected_family} (or press Enter to go back): ").strip()
+            if not config_selection:
+                return
+            
+            try:
+                config_idx = int(config_selection)
+                if config_idx == 1:  # "all" option
+                    self.process_family_configs(selected_family, family_configs)
+                elif 2 <= config_idx <= len(family_configs) + 1:  # +1 for "all" option
+                    selected_config = family_configs[config_idx - 2]  # -2 to adjust for "all" and 0-indexing
+                    self.process_single_config(selected_config)
+                else:
+                    self.console.print("[red]Invalid selection[/red]")
+            except ValueError:
+                self.console.print("[red]Invalid input. Please enter a number.[/red]")
+        except ValueError:
+            self.console.print("[red]Invalid input. Please enter a number.[/red]")
+        
+        input("\nPress Enter to continue...")
 
 if __name__ == "__main__":
-    tool = Tool()
-    tool.run()
+    try:
+        mover = LoraMover()
+        mover.run()
+    except KeyboardInterrupt:
+        print("\nOperation canceled by user.")
+        sys.exit(0)
+    except Exception as e:
+        console = Console(stderr=True)
+        console.print(f"[red]Fatal error:[/red]")
+        console.print(f"[red]{str(e)}[/red]")
+        import traceback
+        console.print(traceback.format_exc())
+        input("Press Enter to exit...")
